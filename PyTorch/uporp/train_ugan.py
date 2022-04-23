@@ -1,6 +1,7 @@
 """
- > Training pipeline for FUnIE-GAN (paired) model
-   * Paper: arxiv.org/pdf/1903.09766.pdf
+ > Training pipeline for UGAN and UGAN-P models
+   * Original paper: https://arxiv.org/pdf/1801.04011.pdf
+     (see github.com/cameronfabbri/Underwater-Color-Correction)
  > Maintainer: https://github.com/xahidbuffon
 """
 # py libs
@@ -20,27 +21,33 @@ from torch.utils.data import DataLoader
 from torch.autograd import Variable
 import torchvision.transforms as transforms
 # local libs
-from nets.commons import Weights_Normal, VGG19_PercepLoss
-from nets.funiegan import GeneratorFunieGAN, DiscriminatorFunieGAN
+from nets.ugan import UGAN_Nets, Gradient_Difference_Loss
+from nets.commons import Weights_Normal, Gradient_Penalty
 from utils.data_utils import GetTrainingPairs, GetValImage
 
 ## get configs and training options
 parser = argparse.ArgumentParser()
 parser.add_argument("--cfg_file", type=str, default="configs/train_euvp.yaml")
-#parser.add_argument("--cfg_file", type=str, default="configs/train_ufo.yaml")
 parser.add_argument("--epoch", type=int, default=0, help="which epoch to start from")
-parser.add_argument("--num_epochs", type=int, default=201, help="number of epochs of training")
+parser.add_argument("--num_epochs", type=int, default=50, help="number of epochs of training")
 parser.add_argument("--batch_size", type=int, default=8, help="size of the batches")
-parser.add_argument("--lr", type=float, default=0.0003, help="adam: learning rate")
-parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of 1st order momentum")
-parser.add_argument("--b2", type=float, default=0.99, help="adam: decay of 2nd order momentum")
+parser.add_argument("--lr", type=float, default=0.0001, help="adam: learning rate")
+parser.add_argument("--l1_weight", type=float, default=100, help="Weight for L1 loss")
+parser.add_argument("--ig_weight", type=float, default=1, help="0 for UGAN / 1 for UGAN-P")
+parser.add_argument("--gp_weight", type=float, default=10, help="Weight for gradient penalty (D)")
+parser.add_argument("--n_critic", type=int, default=5, help="training steps for D per iter w.r.t G")
 args = parser.parse_args()
 
 ## training params
 epoch = args.epoch
 num_epochs = args.num_epochs
 batch_size =  args.batch_size
-lr_rate, lr_b1, lr_b2 = args.lr, args.b1, args.b2 
+lr_rate = args.lr
+num_critic = args.n_critic
+lambda_gp = args.gp_weight # 10 (default)  
+lambda_1 = args.l1_weight  # 100 (default) 
+lambda_2 = args.ig_weight  # UGAN-P (default)
+model_v = "UGAN_P" if lambda_2 else "UGAN" 
 # load the data config file
 with open(args.cfg_file) as f:
     cfg = yaml.load(f, Loader=yaml.FullLoader)
@@ -53,33 +60,32 @@ img_height = cfg["im_height"]
 val_interval = cfg["val_interval"]
 ckpt_interval = cfg["ckpt_interval"]
 
-
 ## create dir for model and validation data
-samples_dir = os.path.join("samples/FunieGAN/", dataset_name)
-checkpoint_dir = os.path.join("checkpoints/FunieGAN/", dataset_name)
+samples_dir = "samples/%s/%s" % (model_v, dataset_name)
+checkpoint_dir = "checkpoints/%s/%s/" % (model_v, dataset_name)
 os.makedirs(samples_dir, exist_ok=True)
 os.makedirs(checkpoint_dir, exist_ok=True)
 
 
-""" FunieGAN specifics: loss functions and patch-size
------------------------------------------------------"""
-Adv_cGAN = torch.nn.MSELoss()
-L1_G  = torch.nn.L1Loss() # similarity loss (l1)
-L_vgg = VGG19_PercepLoss() # content loss (vgg)
-lambda_1, lambda_con = 7, 3 # 7:3 (as in paper)
-patch = (1, img_height//16, img_width//16) # 16x16 for 256x256
+""" UGAN specifics: loss functions and patch-size
+-------------------------------------------------"""
+L1_G  = torch.nn.L1Loss() # l1 loss term
+L1_gp = Gradient_Penalty() # wgan_gp loss term
+L_gdl = Gradient_Difference_Loss() # GDL loss term
+
 
 # Initialize generator and discriminator
-generator = GeneratorFunieGAN()
-discriminator = DiscriminatorFunieGAN()
+ugan_ = UGAN_Nets(base_model='pix2pix')
+generator = ugan_.netG
+discriminator = ugan_.netD
 
 # see if cuda is available
 if torch.cuda.is_available():
     generator = generator.cuda()
     discriminator = discriminator.cuda()
-    Adv_cGAN.cuda()
+    L1_gp.cuda()
     L1_G = L1_G.cuda()
-    L_vgg = L_vgg.cuda()
+    L_gdl = L_gdl.cuda()
     Tensor = torch.cuda.FloatTensor
 else:
     Tensor = torch.FloatTensor
@@ -89,13 +95,13 @@ if args.epoch == 0:
     generator.apply(Weights_Normal)
     discriminator.apply(Weights_Normal)
 else:
-    generator.load_state_dict(torch.load("checkpoints/FunieGAN/%s/generator_%d.pth" % (dataset_name, args.epoch)))
-    discriminator.load_state_dict(torch.load("checkpoints/FunieGAN/%s/discriminator_%d.pth" % (dataset_name, epoch)))
+    generator.load_state_dict(torch.load("checkpoints/%s/%s/generator_%d.pth" % (model_v, dataset_name, args.epoch)))
+    discriminator.load_state_dict(torch.load("checkpoints/%s/%s/discriminator_%d.pth" % (model_v, dataset_name, epoch)))
     print ("Loaded model from epoch %d" %(epoch))
 
 # Optimizers
-optimizer_G = torch.optim.Adam(generator.parameters(), lr=lr_rate, betas=(lr_b1, lr_b2))
-optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=lr_rate, betas=(lr_b1, lr_b2))
+optimizer_G = torch.optim.Adam(generator.parameters(), lr=lr_rate)
+optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=lr_rate)
 
 
 ## Data pipeline
@@ -126,40 +132,37 @@ for epoch in range(epoch, num_epochs):
         # Model inputs
         imgs_distorted = Variable(batch["A"].type(Tensor))
         imgs_good_gt = Variable(batch["B"].type(Tensor))
-        # Adversarial ground truths
-        valid = Variable(Tensor(np.ones((imgs_distorted.size(0), *patch))), requires_grad=False)
-        fake = Variable(Tensor(np.zeros((imgs_distorted.size(0), *patch))), requires_grad=False)
 
         ## Train Discriminator
         optimizer_D.zero_grad()
         imgs_fake = generator(imgs_distorted)
-        pred_real = discriminator(imgs_good_gt, imgs_distorted)
-        loss_real = Adv_cGAN(pred_real, valid)
-        pred_fake = discriminator(imgs_fake, imgs_distorted)
-        loss_fake = Adv_cGAN(pred_fake, fake)
-        # Total loss: real + fake (standard PatchGAN)
-        loss_D = 0.5 * (loss_real + loss_fake) * 10.0 # 10x scaled for stability
+        pred_real = discriminator(imgs_good_gt)
+        pred_fake = discriminator(imgs_fake)
+        loss_D = -torch.mean(pred_real) + torch.mean(pred_fake) # wgan 
+        gradient_penalty = L1_gp(discriminator, imgs_good_gt.data, imgs_fake.data)
+        loss_D += lambda_gp * gradient_penalty # Eq.2 paper 
         loss_D.backward()
         optimizer_D.step()
 
-        ## Train Generator
         optimizer_G.zero_grad()
-        imgs_fake = generator(imgs_distorted)
-        pred_fake = discriminator(imgs_fake, imgs_distorted)
-        loss_GAN =  Adv_cGAN(pred_fake, valid) # GAN loss
-        loss_1 = L1_G(imgs_fake, imgs_good_gt) # similarity loss
-        loss_con = L_vgg(imgs_fake, imgs_good_gt)# content loss
-        # Total loss (Section 3.2.1 in the paper)
-        loss_G = loss_GAN + lambda_1 * loss_1  + lambda_con * loss_con 
-        loss_G.backward()
-        optimizer_G.step()
+        ## Train Generator at 1:num_critic rate 
+        if i % num_critic == 0:
+            imgs_fake = generator(imgs_distorted)
+            pred_fake = discriminator(imgs_fake.detach())
+            loss_gen = -torch.mean(pred_fake)
+            loss_1 = L1_G(imgs_fake, imgs_good_gt)
+            loss_gdl = L_gdl(imgs_fake, imgs_good_gt)
+            # Total loss: Eq.6 in paper
+            loss_G = loss_gen + lambda_1 * loss_1 + lambda_2 * loss_gdl   
+            loss_G.backward()
+            optimizer_G.step()
 
         ## Print log
         if not i%50:
-            sys.stdout.write("\r[Epoch %d/%d: batch %d/%d] [DLoss: %.3f, GLoss: %.3f, AdvLoss: %.3f]"
+            sys.stdout.write("\r[Epoch %d/%d: batch %d/%d] [DLoss: %.3f, GLoss: %.3f]"
                               %(
                                 epoch, num_epochs, i, len(dataloader),
-                                loss_D.item(), loss_G.item(), loss_GAN.item(),
+                                loss_D.item(), loss_G.item(),
                                )
             )
         ## If at sample interval save image
@@ -169,11 +172,10 @@ for epoch in range(epoch, num_epochs):
             imgs_val = Variable(imgs["val"].type(Tensor))
             imgs_gen = generator(imgs_val)
             img_sample = torch.cat((imgs_val.data, imgs_gen.data), -2)
-            save_image(img_sample, "samples/FunieGAN/%s/%s.png" % (dataset_name, batches_done), nrow=5, normalize=True)
+            save_image(img_sample, "samples/%s/%s/%s.png" % (model_v, dataset_name, batches_done), nrow=5, normalize=True)
 
     ## Save model checkpoints
     if (epoch % ckpt_interval == 0):
-        torch.save(generator.state_dict(), "checkpoints/FunieGAN/%s/generator_%d.pth" % (dataset_name, epoch))
-        torch.save(discriminator.state_dict(), "checkpoints/FunieGAN/%s/discriminator_%d.pth" % (dataset_name, epoch))
-
+        torch.save(generator.state_dict(), "checkpoints/%s/%s/generator_%d.pth" % (model_v, dataset_name, epoch))
+        torch.save(discriminator.state_dict(), "checkpoints/%s/%s/discriminator_%d.pth" % (model_v, dataset_name, epoch))
 

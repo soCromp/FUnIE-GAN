@@ -1,7 +1,7 @@
 
 # dataset info
 dataset_name: "EUVP" 
-dataset_path: "/mnt/data1/ImageEnhance/EUVP/Paired/"
+dataset_path: "/srv/home/sonic/FUnIE-GAN/PyTorch/uporp/data/euvp/Paired"
 
 # image info
 chans: 3
