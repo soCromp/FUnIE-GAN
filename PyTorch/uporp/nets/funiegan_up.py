@@ -75,7 +75,8 @@ class GeneratorFunieGANUP(nn.Module):
 
 
 class DiscriminatorFunieGANUP(nn.Module):
-    """ A 4-layer Markovian discriminator as described in the paper
+    """ A 4-layer Markovian discriminator as described in the paper -- for
+    unpaired data regime
     """
     def __init__(self, in_channels=3):
         super(DiscriminatorFunieGANUP, self).__init__()
@@ -98,11 +99,38 @@ class DiscriminatorFunieGANUP(nn.Module):
             nn.Conv2d(256, 1, 4, padding=1, bias=False)
         )
 
-    def forward(self, img_A, img_B): #for paired images
-        # Concatenate image and condition image by channels to produce input
-        img_input = torch.cat((img_A, img_B), 1)
-        return self.model(img_input)
+    # def forwardp(self, img_A, img_B): #for paired images
+    #     # Concatenate image and condition image by channels to produce input
+    #     img_input = torch.cat((img_A, img_B), 1)
+    #     return self.model(img_input)
 
     def forward(self, img): #for unpaired image
         return self.model(img)
 
+class DiscriminatorFunieGANP(nn.Module):
+    """ A 4-layer Markovian discriminator as described in the paper -- same as in
+    paired-only data regime
+    """
+    def __init__(self, in_channels=3):
+        super(DiscriminatorFunieGANP, self).__init__()
+
+        def discriminator_block(in_filters, out_filters, bn=True):
+            #Returns downsampling layers of each discriminator block
+            layers = [nn.Conv2d(in_filters, out_filters, 4, stride=2, padding=1)]
+            if bn: layers.append(nn.BatchNorm2d(out_filters, momentum=0.8))
+            layers.append(nn.LeakyReLU(0.2, inplace=True))
+            return layers
+
+        self.model = nn.Sequential(
+            *discriminator_block(in_channels*2, 32, bn=False),
+            *discriminator_block(32, 64),
+            *discriminator_block(64, 128),
+            *discriminator_block(128, 256),
+            nn.ZeroPad2d((1, 0, 1, 0)),
+            nn.Conv2d(256, 1, 4, padding=1, bias=False)
+        )
+
+    def forward(self, img_A, img_B):
+        # Concatenate image and condition image by channels to produce input
+        img_input = torch.cat((img_A, img_B), 1)
+        return self.model(img_input)

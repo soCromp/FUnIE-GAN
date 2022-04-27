@@ -34,26 +34,28 @@ class GetTrainingData(Dataset):
         return self.len
 
     def get_file_paths(self, root, dataset_name):
-        if dataset_name=='EUVP':
+        if dataset_name=='paired':
+            root = os.path.join(root, 'Paired')
             filesA, filesB = [], []
             sub_dirs = ['underwater_imagenet', 'underwater_dark', 'underwater_scenes']
             for sd in sub_dirs:
                 filesA += sorted(glob.glob(os.path.join(root, sd, 'trainA') + "/*.*"))
                 filesB += sorted(glob.glob(os.path.join(root, sd, 'trainB') + "/*.*"))
-        elif dataset_name=='UFO-120':
-                filesA = sorted(glob.glob(os.path.join(root, 'lrd') + "/*.*"))
-                filesB = sorted(glob.glob(os.path.join(root, 'hr') + "/*.*"))
+        elif dataset_name=='unpaired':
+            root = os.path.join(root, 'Unpaired')
+            filesA = sorted(glob.glob(os.path.join(root, 'trainA') + "/*.*"))
+            filesB = sorted(glob.glob(os.path.join(root, 'trainB') + "/*.*"))
         return filesA, filesB 
 
 
 
 class GetValImage(Dataset):
     """ Common data pipeline to organize and generate
-         vaditaion samples for various datasets   
+         vaditaion samples for EUVP   
     """
-    def __init__(self, root, dataset_name, transforms_=None, sub_dir='validation'):
+    def __init__(self, root, transforms_=None, sub_dir='validation'):
         self.transform = transforms.Compose(transforms_)
-        self.files = self.get_file_paths(root, dataset_name)
+        self.files = self.get_file_paths(root)
         self.len = len(self.files)
 
     def __getitem__(self, index):
@@ -64,13 +66,11 @@ class GetValImage(Dataset):
     def __len__(self):
         return self.len
 
-    def get_file_paths(self, root, dataset_name):
-        if dataset_name=='EUVP':
-            files = []
-            sub_dirs = ['underwater_imagenet', 'underwater_dark', 'underwater_scenes']
-            for sd in sub_dirs:
-                files += sorted(glob.glob(os.path.join(root, sd, 'validation') + "/*.*"))
-        elif dataset_name=='UFO-120':
-            files = sorted(glob.glob(os.path.join(root, 'lrd') + "/*.*"))
+    def get_file_paths(self, root):
+        files = []
+        sub_dirs = ['underwater_imagenet', 'underwater_dark', 'underwater_scenes']
+        for sd in sub_dirs:
+            files += sorted(glob.glob(os.path.join(root, 'Paired', sd, 'validation') + "/*.*"))
+        files += sorted(glob.glob(os.path.join(root, 'Unpaired/validation') + "/*.*"))
         return files
 

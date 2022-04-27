@@ -1,7 +1,6 @@
 
 # dataset info
-dataset_name: "EUVP" 
-dataset_path: "/srv/home/sonic/FUnIE-GAN/PyTorch/uporp/data/euvp/Paired"
+dataset_path: "/srv/home/sonic/FUnIE-GAN/PyTorch/uporp/data/euvp/"
 
 # image info
 chans: 3
@@ -9,7 +8,7 @@ im_width: 256
 im_height: 256
 
 # other params
-val_interval: 1000 # steps
+val_interval: 1 # epochs
 ckpt_interval: 20  # epochs
 
 
