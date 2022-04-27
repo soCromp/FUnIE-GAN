@@ -151,20 +151,17 @@ for epoch in range(epoch, num_epochs):
         loss_fakeDu = mse(pred_fakeDu, zeroes)
         # Total loss: real + fake (standard PatchGAN)
         loss_Du = 0.5 * (loss_realDu + loss_fakeDu) * 10.0 # 10x scaled for stability
-        print('Du loss')
         
         pred_realDc = Dc(imgB)
         loss_realDc = mse(pred_realDc, ones)
         pred_fakeDc = Dc(fakeB)
         loss_fakeDc = mse(pred_fakeDc, zeroes)
         loss_Dc = 0.5 * (loss_realDc + loss_fakeDc) * 10.0
-        print('Dc loss')
 
         loss_Du.backward()
         loss_Dc.backward()
         optimizer_Du.step()
         optimizer_Dc.step()
-        print('finished disc')
 
         optimizer_Gc.zero_grad()
         optimizer_Gu.zero_grad()
@@ -175,26 +172,22 @@ for epoch in range(epoch, num_epochs):
         pred_fakeDc = Dc(fakeB)
         loss_foolGu = mse(pred_fakeDu, ones) #since generator wants to fool discriminator
         loss_foolGc = mse(pred_fakeDc, ones)
-        print('fool loss')
 
         reconstrA = Gu(fakeB)
         reconstrB = Gc(fakeA)
         loss_reconA = mae(reconstrA, imgA)
         loss_reconB = mae(reconstrB, imgB)
-        print('recon loss')
 
         idA = Gu(imgA) #generate clear from real clear - should be identical
         idB = Gc(imgB)
         loss_idA = mae(idA, imgA)
         loss_idB = mae(idB, imgB)
-        print('id loss')
 
         # loss
         lossG = loss_foolGu + loss_foolGc + 10*loss_reconA + 10*loss_reconB + loss_idA + loss_idB
         lossG.backward()
         optimizer_Gc.step()
         optimizer_Gu.step()
-        print('finish gen')
 
         ## Print log
         if not i%50:

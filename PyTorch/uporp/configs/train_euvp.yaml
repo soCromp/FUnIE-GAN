@@ -1,6 +1,7 @@
 
 # dataset info
 dataset_path: "/srv/home/sonic/FUnIE-GAN/PyTorch/uporp/data/euvp/"
+mix: alternate #paired, unpaired, alternate, evolve, integer (for threshold)
 
 # image info
 chans: 3
@@ -8,6 +9,7 @@ im_width: 256
 im_height: 256
 
 # other params
+name: "alternate"
 val_interval: 1 # epochs
 ckpt_interval: 20  # epochs
 

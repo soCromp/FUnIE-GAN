@@ -23,6 +23,7 @@ import torchvision.transforms as transforms
 from nets.commons import Weights_Normal, VGG19_PercepLoss
 from nets.funiegan_up import GeneratorFunieGANUP, DiscriminatorFunieGANUP, DiscriminatorFunieGANP
 from utils.data_utils import GetTrainingData, GetValImage
+from numpy.random import binomial as bi
 
 ## get configs and training options
 parser = argparse.ArgumentParser()
@@ -36,16 +37,38 @@ parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of 1st or
 parser.add_argument("--b2", type=float, default=0.99, help="adam: decay of 2nd order momentum")
 args = parser.parse_args()
 
+## pup functions: ret 0 for paired and 1 for unpaired (epoch 0 -> 0)
+def paired(epoch): return 0
+def unpaired(epoch): return 1
+
+
+def alternate(epoch):
+    return epoch%2
+
+
+def thresh(epoch): #paired until a threshold, then unpaired
+    if epoch < th: return 0
+    else: return 1
+
+
+def evolve(epoch): #start with mostly paired and transition to mostly unpaired
+    return bi(1, epoch/2) # 1 trial with epoch/2 probability of being 1 (else 0)
+    # epoch 0, guaranteed to be 0/paired and epoch 200, guaranteed to be 1/unpaired
+
+df = {'paired':paired, 'unpaired':unpaired, 'alternate':alternate, 'evolve':evolve}
+
+
 ## training params
 epoch = args.epoch
 num_epochs = args.num_epochs
 batch_size =  args.batch_size
 lr_rate, lr_b1, lr_b2 = args.lr, args.b1, args.b2 
 # load the data config file
-with open(args.cfg_file) as f:
-    cfg = yaml.load(f, Loader=yaml.FullLoader)
+with open(args.cfg_file) as file:
+    cfg = yaml.load(file, Loader=yaml.FullLoader)
 # get info from config file
 # dataset_name = cfg["dataset_name"] 
+name=cfg['name']
 dataset_path = cfg["dataset_path"]
 channels = cfg["chans"]
 img_width = cfg["im_width"]
@@ -53,10 +76,16 @@ img_height = cfg["im_height"]
 val_interval = cfg["val_interval"]
 ckpt_interval = cfg["ckpt_interval"]
 
+try:
+    f=df[cfg['mix']]
+except:
+    f=thresh
+    th=int(cfg['mix'])
+
 
 ## create dir for model and validation data
-samples_dir = os.path.join("samples/FunieGAN/up/euvp")
-checkpoint_dir = os.path.join("checkpoints/FunieGAN/up/euvp")
+samples_dir = os.path.join("samples/FunieGAN", name)
+checkpoint_dir = os.path.join("checkpoints/FunieGAN", name)
 os.makedirs(samples_dir, exist_ok=True)
 os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -87,6 +116,7 @@ if torch.cuda.is_available():
     DPu=DPu.cuda()
     mse.cuda()
     mae.cuda()
+    L_vgg=L_vgg.cuda()
     Tensor = torch.cuda.FloatTensor
 else:
     Tensor = torch.FloatTensor
@@ -256,25 +286,32 @@ def train_paired():
         
         loss_Gu = loss_foolGu + lambda_1*loss_1u + lambda_con*loss_conu
         loss_Gc = loss_foolGc + lambda_1*loss_1c + lambda_con*loss_conc
+        loss_G = 0.5 * (loss_Gu + loss_Gc)
 
-        loss_Gu.backward()
-        loss_Gc.backward()
+        loss_G.backward()
         optimizer_Gu.step()
         optimizer_Gc.step()
 
-    return loss_DPu.detach(), loss_DPc.detach(), 0.5 * (loss_Gu.detach() + loss_Gc.detach()) #stats for last batch
+    return loss_DPu.detach(), loss_DPc.detach(), loss_G.detach() #stats for last batch
 
 
 ## Training pipeline
 for epoch in range(epoch, num_epochs):
     #call train_paired or train_unpaired
-    loss_Du, loss_Dc, lossG = train_paired()
+    
+    mode = f(epoch) #0 for paired, 1 for unpaired
+    if mode:
+        loss_Du, loss_Dc, lossG = train_unpaired()
+        desc = 'unpaired'
+    else:
+        loss_Du, loss_Dc, lossG = train_paired()
+        desc = 'paired'
 
     ## Print log
-    sys.stdout.write("\r[Epoch %d/%d] [DuLoss: %.3f, DcLoss: %.3f, GLoss: %.3f]"
+    sys.stdout.write("\r[Epoch %d/%d] [DuLoss: %.3f, DcLoss: %.3f, GLoss: %.3f] (%s)"
                         %(
                         epoch, num_epochs,
-                        loss_Du.item(), loss_Dc.item(), lossG.item(),
+                        loss_Du.item(), loss_Dc.item(), lossG.item(), desc
                         )
     )
     ## If at sample interval save image
@@ -283,13 +320,13 @@ for epoch in range(epoch, num_epochs):
         imgs_val = Variable(imgs["val"].type(Tensor))
         imgs_gen = Gc(imgs_val)
         img_sample = torch.cat((imgs_val.data, imgs_gen.data), -2)
-        save_image(img_sample, "samples/FunieGAN/up/%s.png" % (epoch), nrow=5, normalize=True)
+        save_image(img_sample, os.path.join(samples_dir, str(epoch)+'.png'), nrow=5, normalize=True)
 
     ## Save model checkpoints
     if (epoch % ckpt_interval == 0):
-        torch.save(Gu.state_dict(), "checkpoints/FunieGAN/up/generatorU_%d.pth" % (epoch))
-        torch.save(Du.state_dict(), "checkpoints/FunieGAN/up/discriminatorU_%d.pth" % (epoch))
-        torch.save(DPu.state_dict(), "checkpoints/FunieGAN/up/discriminatorUpaired_%d.pth" % (epoch))
-        torch.save(Gc.state_dict(), "checkpoints/FunieGAN/up/generatorC_%d.pth" % (epoch))
-        torch.save(Dc.state_dict(), "checkpoints/FunieGAN/up/discriminatorC_%d.pth" % (epoch))
-        torch.save(DPc.state_dict(), "checkpoints/FunieGAN/up/discriminatorCpaired_%d.pth" % (epoch))
+        torch.save(Gu.state_dict(), os.path.join(checkpoint_dir, "generatorU_%d.pth" % (epoch)))
+        torch.save(Du.state_dict(), os.path.join(checkpoint_dir, "discriminatorU_%d.pth" % (epoch)))
+        torch.save(DPu.state_dict(), os.path.join(checkpoint_dir, "discriminatorUpaired_%d.pth" % (epoch)))
+        torch.save(Gc.state_dict(), os.path.join(checkpoint_dir, "generatorC_%d.pth" % (epoch)))
+        torch.save(Dc.state_dict(), os.path.join(checkpoint_dir, "discriminatorC_%d.pth" % (epoch)))
+        torch.save(DPc.state_dict(), os.path.join(checkpoint_dir, "discriminatorCpaired_%d.pth" % (epoch)))
